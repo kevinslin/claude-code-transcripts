@@ -1078,6 +1078,31 @@ class TestParseSessionFile:
         assert "hello world" in index_html.lower()
         assert index_html == snapshot_html
 
+    def test_parses_codex_jsonl_format(self):
+        """Test that Codex JSONL format is normalized to standard loglines."""
+        fixture_path = Path(__file__).parent / "sample_codex_session.jsonl"
+        result = parse_session_file(fixture_path, agent="codex")
+
+        assert [entry["type"] for entry in result["loglines"]] == [
+            "user",
+            "assistant",
+            "assistant",
+            "user",
+        ]
+
+        user_msg = result["loglines"][0]["message"]["content"][0]
+        assert user_msg["type"] == "text"
+        assert user_msg["text"] == "Hello codex"
+
+        tool_use = result["loglines"][2]["message"]["content"][0]
+        assert tool_use["type"] == "tool_use"
+        assert tool_use["name"] == "exec_command"
+        assert tool_use["input"]["cmd"] == "ls"
+
+        tool_result = result["loglines"][3]["message"]["content"][0]
+        assert tool_result["type"] == "tool_result"
+        assert "Exit code: 0" in tool_result["content"]
+
 
 class TestGetSessionSummary:
     """Tests for get_session_summary which extracts summary from session files."""
@@ -1096,6 +1121,12 @@ class TestGetSessionSummary:
         )
         summary = get_session_summary(jsonl_file)
         assert summary == "Hello world test"
+
+    def test_gets_summary_from_codex_jsonl(self):
+        """Test extracting summary from Codex JSONL file."""
+        fixture_path = Path(__file__).parent / "sample_codex_session.jsonl"
+        summary = get_session_summary(fixture_path, agent="codex")
+        assert summary == "Hello codex"
 
     def test_returns_no_summary_for_empty_file(self, tmp_path):
         """Test handling empty or invalid files."""

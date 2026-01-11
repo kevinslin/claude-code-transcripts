@@ -281,13 +281,16 @@ class TestGenerateBatchHtml:
             # Patch generate_html to fail on one specific session
             original_generate_html = __import__("claude_code_transcripts").generate_html
 
-            def mock_generate_html(json_path, output_dir, github_repo=None):
+            def mock_generate_html(json_path, output_dir, github_repo=None, agent=None):
                 if "session1" in str(json_path):
                     raise RuntimeError("Simulated failure")
-                return original_generate_html(json_path, output_dir, github_repo)
+                return original_generate_html(
+                    json_path, output_dir, github_repo, agent=agent
+                )
 
             with patch(
-                "claude_code_transcripts.generate_html", side_effect=mock_generate_html
+                "claude_code_transcripts.generate_html",
+                side_effect=mock_generate_html,
             ):
                 stats = generate_batch_html(projects_dir, output_dir)
 
@@ -301,6 +304,13 @@ class TestGenerateBatchHtml:
 
 class TestAllCommand:
     """Tests for the all CLI command."""
+
+    def test_agent_prefix_dispatches(self):
+        """Test that agent prefix is accepted before the command."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["codex", "all", "--help"])
+        assert result.exit_code == 0
+        assert "all" in result.output.lower()
 
     def test_all_command_exists(self):
         """Test that all command is registered."""

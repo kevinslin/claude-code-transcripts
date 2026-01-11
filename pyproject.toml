@@ -1,7 +1,7 @@
 [project]
 name = "claude-code-transcripts"
 version = "0.5"
-description = "Convert Claude Code session files to HTML transcripts"
+description = "Convert Claude Code and Codex session files to HTML transcripts"
 readme = "README.md"
 license = "Apache-2.0"
 authors = [
@@ -24,7 +24,7 @@ Issues = "https://github.com/simonw/claude-code-transcripts/issues"
 CI = "https://github.com/simonw/claude-code-transcripts/actions"
 
 [project.scripts]
-claude-code-transcripts = "claude_code_transcripts:main"
+llm-transcripts = "claude_code_transcripts:main"
 
 [build-system]
 requires = ["uv_build>=0.9.7,<0.10.0"]

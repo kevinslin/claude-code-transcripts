@@ -1,11 +1,11 @@
-# claude-code-transcripts
+# llm-transcripts
 
 [![PyPI](https://img.shields.io/pypi/v/claude-code-transcripts.svg)](https://pypi.org/project/claude-code-transcripts/)
 [![Changelog](https://img.shields.io/github/v/release/simonw/claude-code-transcripts?include_prereleases&label=changelog)](https://github.com/simonw/claude-code-transcripts/releases)
 [![Tests](https://github.com/simonw/claude-code-transcripts/workflows/Test/badge.svg)](https://github.com/simonw/claude-code-transcripts/actions?query=workflow%3ATest)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/simonw/claude-code-transcripts/blob/main/LICENSE)
 
-Convert Claude Code session files (JSON or JSONL) to clean, mobile-friendly HTML pages with pagination.
+Convert Claude Code and Codex session files (JSON or JSONL) to clean, mobile-friendly HTML pages with pagination.
 
 [Example transcript](https://static.simonwillison.net/static/2025/claude-code-microjs/index.html) produced using this tool.
 
@@ -13,30 +13,43 @@ Read [A new way to extract detailed transcripts from Claude Code](https://simonw
 
 ## Installation
 
-Install this tool using `uv`:
+Install this tool using `uv` (installs the `llm-transcripts` command):
 ```bash
 uv tool install claude-code-transcripts
 ```
 Or run it without installing:
 ```bash
-uvx claude-code-transcripts --help
+uvx --from claude-code-transcripts llm-transcripts --help
 ```
 
 ## Usage
 
-This tool converts Claude Code session files into browseable multi-page HTML transcripts.
+This tool converts Claude Code or Codex session files into browseable multi-page HTML transcripts.
+
+Select an agent by passing it before the command, or set `LLM_AGENT`:
+
+```bash
+llm-transcripts claude local
+llm-transcripts codex local
+
+# Or set once for all commands
+export LLM_AGENT=claude
+llm-transcripts local
+```
+
+Examples below assume `LLM_AGENT` is set; otherwise pass the agent first (e.g., `llm-transcripts codex local`).
 
 There are four commands available:
 
-- `local` (default) - select from local Claude Code sessions stored in `~/.claude/projects`
-- `web` - select from web sessions via the Claude API
+- `local` (default) - select from local sessions (`~/.claude/projects` or `~/.codex/sessions`)
+- `web` - select from web sessions via the Claude API (Claude only)
 - `json` - convert a specific JSON or JSONL session file
 - `all` - convert all local sessions to a browsable HTML archive
 
 The quickest way to view a recent local session:
 
 ```bash
-claude-code-transcripts
+LLM_AGENT=claude llm-transcripts
 ```
 
 This shows an interactive picker to select a session, generates HTML, and opens it in your default browser.
@@ -58,18 +71,18 @@ The generated output includes:
 
 ### Local sessions
 
-Local Claude Code sessions are stored as JSONL files in `~/.claude/projects`. Run with no arguments to select from recent sessions:
+Local sessions are stored as JSONL files in `~/.claude/projects` (Claude) or `~/.codex/sessions` (Codex). Run with no arguments to select from recent sessions:
 
 ```bash
-claude-code-transcripts
+llm-transcripts
 # or explicitly:
-claude-code-transcripts local
+llm-transcripts local
 ```
 
 Use `--limit` to control how many sessions are shown (default: 10):
 
 ```bash
-claude-code-transcripts local --limit 20
+llm-transcripts local --limit 20
 ```
 
 ### Web sessions
@@ -78,14 +91,16 @@ Import sessions directly from the Claude API:
 
 ```bash
 # Interactive session picker
-claude-code-transcripts web
+llm-transcripts web
 
 # Import a specific session by ID
-claude-code-transcripts web SESSION_ID
+llm-transcripts web SESSION_ID
 
 # Import and publish to gist
-claude-code-transcripts web SESSION_ID --gist
+llm-transcripts web SESSION_ID --gist
 ```
+
+Web sessions are only available for the Claude agent.
 
 On macOS, API credentials are automatically retrieved from your keychain (requires being logged into Claude Code). On other platforms, provide `--token` and `--org-uuid` manually.
 
@@ -94,9 +109,9 @@ On macOS, API credentials are automatically retrieved from your keychain (requir
 Use the `--gist` option to automatically upload your transcript to a GitHub Gist and get a shareable preview URL:
 
 ```bash
-claude-code-transcripts --gist
-claude-code-transcripts web --gist
-claude-code-transcripts json session.json --gist
+llm-transcripts --gist
+llm-transcripts web --gist
+llm-transcripts json session.json --gist
 ```
 
 This will output something like:
@@ -111,7 +126,7 @@ The preview URL uses [gisthost.github.io](https://gisthost.github.io/) to render
 Combine with `-o` to keep a local copy:
 
 ```bash
-claude-code-transcripts json session.json -o ./my-transcript --gist
+llm-transcripts json session.json -o ./my-transcript --gist
 ```
 
 **Requirements:** The `--gist` option requires the [GitHub CLI](https://cli.github.com/) (`gh`) to be installed and authenticated (`gh auth login`).
@@ -122,10 +137,10 @@ Use `-a/--output-auto` to automatically create a subdirectory named after the se
 
 ```bash
 # Creates ./session_ABC123/ subdirectory
-claude-code-transcripts web SESSION_ABC123 -a
+llm-transcripts web SESSION_ABC123 -a
 
 # Creates ./transcripts/session_ABC123/ subdirectory
-claude-code-transcripts web SESSION_ABC123 -o ./transcripts -a
+llm-transcripts web SESSION_ABC123 -o ./transcripts -a
 ```
 
 ### Including the source file
@@ -133,7 +148,7 @@ claude-code-transcripts web SESSION_ABC123 -o ./transcripts -a
 Use the `--json` option to include the original session file in the output directory:
 
 ```bash
-claude-code-transcripts json session.json -o ./my-transcript --json
+llm-transcripts json session.json -o ./my-transcript --json
 ```
 
 This will output:
@@ -148,19 +163,19 @@ This is useful for archiving the source data alongside the HTML output.
 Convert a specific session file directly:
 
 ```bash
-claude-code-transcripts json session.json -o output-directory/
-claude-code-transcripts json session.jsonl --open
+llm-transcripts json session.json -o output-directory/
+llm-transcripts json session.jsonl --open
 ```
-This works with both JSONL files in the `~/.claude/projects/` folder and JSON session files extracted from Claude Code for web.
+This works with JSONL files in `~/.claude/projects/` or `~/.codex/sessions/` and JSON session files extracted from Claude Code for web.
 
 The `json` command can take a URL to a JSON or JSONL file as an alternative to a path on disk.
 
 ### Converting all sessions
 
-Convert all your local Claude Code sessions to a browsable HTML archive:
+Convert all your local sessions to a browsable HTML archive:
 
 ```bash
-claude-code-transcripts all
+llm-transcripts all
 ```
 
 This creates a directory structure with:
@@ -170,8 +185,8 @@ This creates a directory structure with:
 
 Options:
 
-- `-s, --source DIRECTORY` - source directory (default: `~/.claude/projects`)
-- `-o, --output DIRECTORY` - output directory (default: `./claude-archive`)
+- `-s, --source DIRECTORY` - source directory (default: `~/.claude/projects` or `~/.codex/sessions`)
+- `-o, --output DIRECTORY` - output directory (default: `./claude-archive` or `./codex-archive`)
 - `--include-agents` - include agent session files (excluded by default)
 - `--dry-run` - show what would be converted without creating files
 - `--open` - open the generated archive in your default browser
@@ -181,16 +196,16 @@ Examples:
 
 ```bash
 # Preview what would be converted
-claude-code-transcripts all --dry-run
+llm-transcripts all --dry-run
 
 # Convert all sessions and open in browser
-claude-code-transcripts all --open
+llm-transcripts all --open
 
 # Convert to a specific directory
-claude-code-transcripts all -o ./my-archive
+llm-transcripts all -o ./my-archive
 
 # Include agent sessions
-claude-code-transcripts all --include-agents
+llm-transcripts all --include-agents
 ```
 
 ## Development
@@ -202,5 +217,5 @@ uv run pytest
 ```
 And run your local development copy of the tool like this:
 ```bash
-uv run claude-code-transcripts --help
+uv run llm-transcripts --help
 ```

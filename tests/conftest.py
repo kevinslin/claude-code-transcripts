@@ -14,3 +14,9 @@ def mock_webbrowser_open(monkeypatch):
 
     monkeypatch.setattr("claude_code_transcripts.webbrowser.open", mock_open)
     return opened_urls
+
+
+@pytest.fixture(autouse=True)
+def default_agent_env(monkeypatch):
+    """Default to claude agent for CLI tests unless overridden."""
+    monkeypatch.setenv("LLM_AGENT", "claude")

@@ -4,7 +4,7 @@ Uses uv. Run tests like this:
 
 Run the development version of the tool like this:
 
-    uv run claude-code-transcripts --help
+    uv run llm-transcripts --help
 
 Always practice TDD: write a faliing test, watch it fail, then make it pass.
 

@@ -14,6 +14,7 @@ from claude_code_transcripts import (
     read_codex_summary,
     build_codex_summary_prompt,
     _select_session_with_refresh,
+    CODEX_SUMMARY_MAX_CHARS,
 )
 
 
@@ -81,6 +82,17 @@ def test_build_codex_summary_prompt_includes_roles(tmp_path):
     prompt = build_codex_summary_prompt(session_file)
     assert "User: User asks" in prompt
     assert "Assistant: Assistant replies" in prompt
+
+
+def test_build_codex_summary_prompt_truncates_long_messages(tmp_path):
+    session_file = tmp_path / "session.jsonl"
+    long_text = "x" * (CODEX_SUMMARY_MAX_CHARS + 500)
+    _write_codex_session(session_file, long_text, "Assistant reply")
+
+    prompt = build_codex_summary_prompt(session_file)
+    assert prompt is not None
+    conversation = prompt.split("Conversation:\n", 1)[1].rsplit("\n\nSummary:", 1)[0]
+    assert len(conversation) <= CODEX_SUMMARY_MAX_CHARS
 
 
 def test_select_session_refreshes_after_background_completion():

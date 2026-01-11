@@ -291,7 +291,13 @@ def build_codex_summary_prompt(
             continue
         prefix = "User" if role == "user" else "Assistant"
         line = f"{prefix}: {text.strip()}"
-        if total_chars + len(line) > max_chars:
+        remaining = max_chars - total_chars
+        if remaining <= 0:
+            break
+        if len(line) > remaining:
+            line = line[:remaining]
+            lines.append(line)
+            total_chars += len(line)
             break
         lines.append(line)
         total_chars += len(line)
@@ -341,6 +347,43 @@ def _find_codex_local_sessions(folder, limit=10):
     return results, missing
 
 
+def _generate_codex_summary(session_file):
+    prompt = build_codex_summary_prompt(session_file)
+    if not prompt:
+        return False
+
+    summary_path = codex_summary_path(session_file)
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+
+    result = subprocess.run(
+        [
+            "codex",
+            "exec",
+            "--output-last-message",
+            str(summary_path),
+            "--skip-git-repo-check",
+            "-",
+        ],
+        input=prompt,
+        text=True,
+        capture_output=True,
+    )
+
+    if result.returncode != 0:
+        error_text = (result.stderr or "").strip() or (result.stdout or "").strip()
+        if not error_text:
+            error_text = "Unknown error"
+        click.echo(
+            f"Codex summary failed for {session_file.name} "
+            f"(exit {result.returncode}): {error_text}"
+        )
+        if summary_path.exists() and summary_path.stat().st_size == 0:
+            summary_path.unlink()
+        return False
+
+    return True
+
+
 def start_codex_summary_generation(session_files):
     if not session_files:
         return None
@@ -348,44 +391,15 @@ def start_codex_summary_generation(session_files):
         click.echo("codex CLI not found; skipping summary generation.")
         return None
 
-    processes = []
-    for session_file in session_files:
-        prompt = build_codex_summary_prompt(session_file)
-        if not prompt:
-            continue
-        summary_path = codex_summary_path(session_file)
-        summary_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            proc = subprocess.Popen(
-                [
-                    "codex",
-                    "exec",
-                    "--output-last-message",
-                    str(summary_path),
-                    "--skip-git-repo-check",
-                    "-",
-                ],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-        except FileNotFoundError:
-            click.echo("codex CLI not found; skipping summary generation.")
-            return None
-        if proc.stdin:
-            proc.stdin.write(prompt)
-            proc.stdin.close()
-        processes.append(proc)
-
-    if not processes:
+    session_files = [Path(session_file) for session_file in session_files]
+    if not session_files:
         return None
 
     done_event = threading.Event()
 
     def wait_for_processes():
-        for proc in processes:
-            proc.wait()
+        for session_file in session_files:
+            _generate_codex_summary(session_file)
         done_event.set()
 
     thread = threading.Thread(target=wait_for_processes, daemon=True)

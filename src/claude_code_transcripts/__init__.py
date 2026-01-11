@@ -105,6 +105,8 @@ def default_session_prefix(agent):
 
 CODEX_SUMMARY_MAX_CHARS = 6000
 CODEX_SUMMARY_MAX_MESSAGES = 50
+CODEX_SUMMARY_SESSION_MARKER = "llm-transcripts-summary"
+CODEX_SUMMARY_SESSION_SIGNATURE = "Summarize the following Codex conversation"
 
 
 def codex_summary_cache_dir():
@@ -127,6 +129,42 @@ def read_codex_summary(session_file):
     if not summary_text:
         return None
     return " ".join(summary_text.split())
+
+
+def is_codex_summary_session(session_file):
+    marker = CODEX_SUMMARY_SESSION_MARKER
+    signature = CODEX_SUMMARY_SESSION_SIGNATURE.lower()
+    try:
+        with open(session_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("type") == "session_meta":
+                    instructions = obj.get("payload", {}).get("instructions") or ""
+                    instructions_norm = instructions.lower()
+                    if marker in instructions_norm or signature in instructions_norm:
+                        return True
+                    continue
+                if obj.get("type") != "response_item":
+                    continue
+                payload = obj.get("payload", {})
+                if payload.get("type") != "message" or payload.get("role") != "user":
+                    continue
+                content = normalize_codex_content(payload.get("content", []))
+                text = extract_text_from_content(content)
+                if text:
+                    text_norm = text.lower()
+                    if marker in text_norm or signature in text_norm:
+                        return True
+                    break
+    except OSError:
+        return False
+    return False
 
 
 def extract_text_from_content(content):
@@ -309,7 +347,8 @@ def build_codex_summary_prompt(
 
     conversation = "\n".join(lines)
     return (
-        "Summarize the following Codex conversation in 1-2 sentences. "
+        f"Marker: {CODEX_SUMMARY_SESSION_MARKER}\n"
+        f"{CODEX_SUMMARY_SESSION_SIGNATURE} in 1-2 sentences. "
         "Focus on the user's goal and the outcome. Use plain text.\n\n"
         "Conversation:\n"
         f"{conversation}\n\nSummary:"
@@ -324,6 +363,8 @@ def _find_codex_local_sessions(folder, limit=10):
     sessions = []
     for session_file in folder.glob("**/*.jsonl"):
         if session_file.name.startswith("agent-"):
+            continue
+        if is_codex_summary_session(session_file):
             continue
         summary = _get_codex_jsonl_summary(session_file)
         if summary.lower() == "warmup" or summary == "(no summary)":
@@ -538,6 +579,8 @@ def _find_all_codex_sessions(folder, include_agents=False):
 
     for session_file in folder.glob("**/*.jsonl"):
         if not include_agents and session_file.name.startswith("agent-"):
+            continue
+        if is_codex_summary_session(session_file):
             continue
 
         summary = get_session_summary(session_file, agent=AGENT_CODEX)

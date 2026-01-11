@@ -15,6 +15,7 @@ from claude_code_transcripts import (
     build_codex_summary_prompt,
     _select_session_with_refresh,
     CODEX_SUMMARY_MAX_CHARS,
+    CODEX_SUMMARY_SESSION_MARKER,
 )
 
 
@@ -80,8 +81,47 @@ def test_build_codex_summary_prompt_includes_roles(tmp_path):
     _write_codex_session(session_file, "User asks", "Assistant replies")
 
     prompt = build_codex_summary_prompt(session_file)
+    assert CODEX_SUMMARY_SESSION_MARKER in prompt
     assert "User: User asks" in prompt
     assert "Assistant: Assistant replies" in prompt
+
+
+def test_find_local_sessions_skips_summary_sessions(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    sessions_dir = tmp_path / ".codex" / "sessions" / "project"
+    sessions_dir.mkdir(parents=True)
+
+    summary_session = sessions_dir / "summary.jsonl"
+    summary_session.write_text(
+        '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Marker: llm-transcripts-summary"}]}}\n',
+        encoding="utf-8",
+    )
+
+    normal_session = sessions_dir / "normal.jsonl"
+    _write_codex_session(normal_session, "Hello")
+
+    results, _ = find_local_sessions(
+        sessions_dir, limit=10, agent=AGENT_CODEX, include_missing=True
+    )
+
+    paths = [path for path, _ in results]
+    assert summary_session not in paths
+    assert normal_session in paths
+
+
+def test_summary_session_detection_handles_missing_instructions(tmp_path):
+    session_file = tmp_path / "session.jsonl"
+    session_file.write_text(
+        '{"type":"session_meta","payload":{"instructions":null}}\n'
+        '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Hello"}]}}\n',
+        encoding="utf-8",
+    )
+
+    results, _ = find_local_sessions(
+        tmp_path, limit=10, agent=AGENT_CODEX, include_missing=True
+    )
+    assert any(path == session_file for path, _ in results)
 
 
 def test_build_codex_summary_prompt_truncates_long_messages(tmp_path):

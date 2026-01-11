@@ -2,6 +2,7 @@
 __pycache__
 uv.lock
 .playwright-mcp/
+.cursorignore
 .cursor/
 .cursorindexingignore
 .specstory/

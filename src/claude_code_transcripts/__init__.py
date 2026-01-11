@@ -1,5 +1,6 @@
 """Convert Claude Code or Codex session JSON to mobile-friendly HTML pages with pagination."""
 
+import asyncio
 import json
 import html
 import os
@@ -8,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import webbrowser
 from datetime import datetime
 from pathlib import Path
@@ -99,6 +101,32 @@ def default_archive_dir(agent):
 
 def default_session_prefix(agent):
     return f"{agent}-session-"
+
+
+CODEX_SUMMARY_MAX_CHARS = 6000
+CODEX_SUMMARY_MAX_MESSAGES = 50
+
+
+def codex_summary_cache_dir():
+    return Path.home() / ".config" / "llm-transcripts" / "codex"
+
+
+def codex_summary_path(session_file):
+    session_file = Path(session_file)
+    return codex_summary_cache_dir() / f"{session_file.stem}.summary.md"
+
+
+def read_codex_summary(session_file):
+    summary_path = codex_summary_path(session_file)
+    if not summary_path.exists():
+        return None
+    try:
+        summary_text = summary_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not summary_text:
+        return None
+    return " ".join(summary_text.split())
 
 
 def extract_text_from_content(content):
@@ -242,15 +270,145 @@ def _get_codex_jsonl_summary(filepath, max_length=200):
     return "(no summary)"
 
 
-def find_local_sessions(folder, limit=10, agent=AGENT_CLAUDE):
+def build_codex_summary_prompt(
+    filepath,
+    max_chars=CODEX_SUMMARY_MAX_CHARS,
+    max_messages=CODEX_SUMMARY_MAX_MESSAGES,
+):
+    data = parse_session_file(filepath, agent=AGENT_CODEX)
+    loglines = data.get("loglines", [])
+    lines = []
+    total_chars = 0
+
+    for entry in loglines:
+        role = entry.get("type")
+        if role not in ("user", "assistant"):
+            continue
+        message = entry.get("message", {})
+        content = message.get("content", "")
+        text = extract_text_from_content(content)
+        if not text:
+            continue
+        prefix = "User" if role == "user" else "Assistant"
+        line = f"{prefix}: {text.strip()}"
+        if total_chars + len(line) > max_chars:
+            break
+        lines.append(line)
+        total_chars += len(line)
+        if len(lines) >= max_messages:
+            break
+
+    if not lines:
+        return None
+
+    conversation = "\n".join(lines)
+    return (
+        "Summarize the following Codex conversation in 1-2 sentences. "
+        "Focus on the user's goal and the outcome. Use plain text.\n\n"
+        "Conversation:\n"
+        f"{conversation}\n\nSummary:"
+    )
+
+
+def _find_codex_local_sessions(folder, limit=10):
+    folder = Path(folder)
+    if not folder.exists():
+        return [], []
+
+    sessions = []
+    for session_file in folder.glob("**/*.jsonl"):
+        if session_file.name.startswith("agent-"):
+            continue
+        summary = _get_codex_jsonl_summary(session_file)
+        if summary.lower() == "warmup" or summary == "(no summary)":
+            continue
+        stat = session_file.stat()
+        sessions.append((session_file, stat.st_mtime))
+
+    sessions.sort(key=lambda item: item[1], reverse=True)
+    limited = [item[0] for item in sessions[:limit]]
+
+    results = []
+    missing = []
+    for session_file in limited:
+        summary = read_codex_summary(session_file)
+        if summary:
+            results.append((session_file, summary))
+        else:
+            results.append((session_file, session_file.stem))
+            missing.append(session_file)
+
+    return results, missing
+
+
+def start_codex_summary_generation(session_files):
+    if not session_files:
+        return None
+    if shutil.which("codex") is None:
+        click.echo("codex CLI not found; skipping summary generation.")
+        return None
+
+    processes = []
+    for session_file in session_files:
+        prompt = build_codex_summary_prompt(session_file)
+        if not prompt:
+            continue
+        summary_path = codex_summary_path(session_file)
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            proc = subprocess.Popen(
+                [
+                    "codex",
+                    "exec",
+                    "--output-last-message",
+                    str(summary_path),
+                    "--skip-git-repo-check",
+                    "-",
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+        except FileNotFoundError:
+            click.echo("codex CLI not found; skipping summary generation.")
+            return None
+        if proc.stdin:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+        processes.append(proc)
+
+    if not processes:
+        return None
+
+    done_event = threading.Event()
+
+    def wait_for_processes():
+        for proc in processes:
+            proc.wait()
+        done_event.set()
+
+    thread = threading.Thread(target=wait_for_processes, daemon=True)
+    thread.start()
+    return done_event
+
+
+def find_local_sessions(folder, limit=10, agent=AGENT_CLAUDE, include_missing=False):
     """Find recent JSONL session files in the given folder.
 
     Returns a list of (Path, summary) tuples sorted by modification time.
     Excludes agent files and warmup/empty sessions.
     """
+    agent = normalize_agent(agent) or AGENT_CLAUDE
+    if agent == AGENT_CODEX:
+        results, missing = _find_codex_local_sessions(folder, limit=limit)
+        if include_missing:
+            return results, missing
+        return results
+
     folder = Path(folder)
     if not folder.exists():
-        return []
+        return [] if not include_missing else ([], [])
 
     results = []
     for f in folder.glob("**/*.jsonl"):
@@ -264,7 +422,10 @@ def find_local_sessions(folder, limit=10, agent=AGENT_CLAUDE):
 
     # Sort by modification time, most recent first
     results.sort(key=lambda x: x[0].stat().st_mtime, reverse=True)
-    return results[:limit]
+    limited = results[:limit]
+    if include_missing:
+        return limited, []
+    return limited
 
 
 def get_project_display_name(folder_name):
@@ -1712,6 +1873,63 @@ def cli():
     pass
 
 
+def _build_local_session_choices(results):
+    choices = []
+    for filepath, summary in results:
+        stat = filepath.stat()
+        mod_time = datetime.fromtimestamp(stat.st_mtime)
+        size_kb = stat.st_size / 1024
+        date_str = mod_time.strftime("%Y-%m-%d %H:%M")
+        if len(summary) > 50:
+            summary = summary[:47] + "..."
+        display = f"{date_str}  {size_kb:5.0f} KB  {summary}"
+        choices.append(questionary.Choice(title=display, value=filepath))
+    return choices
+
+
+async def _wait_for_refresh_event(event):
+    if event is None:
+        return
+    while not event.is_set():
+        await asyncio.sleep(0.1)
+
+
+async def _select_session_with_refresh(
+    message, build_choices, refresh_event, prompt_factory=None
+):
+    if prompt_factory is None:
+        prompt_factory = lambda msg, choices: questionary.select(msg, choices=choices)
+
+    if refresh_event is None:
+        question = prompt_factory(message, build_choices())
+        return await question.ask_async(patch_stdout=True)
+
+    question = prompt_factory(message, build_choices())
+    selection_task = asyncio.create_task(question.ask_async(patch_stdout=True))
+    refresh_task = asyncio.create_task(_wait_for_refresh_event(refresh_event))
+
+    done, _ = await asyncio.wait(
+        {selection_task, refresh_task}, return_when=asyncio.FIRST_COMPLETED
+    )
+    if selection_task in done:
+        refresh_task.cancel()
+        try:
+            await refresh_task
+        except asyncio.CancelledError:
+            pass
+        return selection_task.result()
+
+    question.application.exit(result=None)
+    try:
+        await selection_task
+    except asyncio.CancelledError:
+        pass
+
+    click.echo("Summaries generated. Refreshing list...")
+    refreshed_question = prompt_factory(message, build_choices())
+    return await refreshed_question.ask_async(patch_stdout=True)
+
+
 @cli.command("local")
 @click.option(
     "-o",
@@ -1763,29 +1981,43 @@ def local_cmd(ctx, output, output_auto, repo, gist, include_json, open_browser, 
         return
 
     click.echo("Loading local sessions...")
-    results = find_local_sessions(projects_folder, limit=limit, agent=agent)
+    missing_summaries = []
+    if agent == AGENT_CODEX:
+        results, missing_summaries = find_local_sessions(
+            projects_folder, limit=limit, agent=agent, include_missing=True
+        )
+    else:
+        results = find_local_sessions(projects_folder, limit=limit, agent=agent)
 
     if not results:
         click.echo("No local sessions found.")
         return
 
-    # Build choices for questionary
-    choices = []
-    for filepath, summary in results:
-        stat = filepath.stat()
-        mod_time = datetime.fromtimestamp(stat.st_mtime)
-        size_kb = stat.st_size / 1024
-        date_str = mod_time.strftime("%Y-%m-%d %H:%M")
-        # Truncate summary if too long
-        if len(summary) > 50:
-            summary = summary[:47] + "..."
-        display = f"{date_str}  {size_kb:5.0f} KB  {summary}"
-        choices.append(questionary.Choice(title=display, value=filepath))
+    refresh_event = None
+    if agent == AGENT_CODEX and missing_summaries:
+        refresh_event = start_codex_summary_generation(missing_summaries)
 
-    selected = questionary.select(
-        "Select a session to convert:",
-        choices=choices,
-    ).ask()
+    def build_choices():
+        if agent == AGENT_CODEX:
+            current_results = find_local_sessions(
+                projects_folder, limit=limit, agent=agent
+            )
+        else:
+            current_results = results
+        return _build_local_session_choices(current_results)
+
+    if agent == AGENT_CODEX and refresh_event is not None:
+        selected = asyncio.run(
+            _select_session_with_refresh(
+                "Select a session to convert:", build_choices, refresh_event
+            )
+        )
+    else:
+        choices = build_choices()
+        selected = questionary.select(
+            "Select a session to convert:",
+            choices=choices,
+        ).ask()
 
     if selected is None:
         click.echo("No session selected.")

@@ -210,12 +210,18 @@ llm-transcripts all --include-agents
 
 ## Development
 
-To contribute to this tool, first checkout the code. You can run the tests using `uv run`:
+Run everything from the repo root using `uv`:
+
 ```bash
-cd claude-code-transcripts
+# install dev dependencies
+uv sync --dev
+
+# run tests
 uv run pytest
-```
-And run your local development copy of the tool like this:
-```bash
+
+# run the CLI from source
 uv run llm-transcripts --help
+
+# format code
+uv run black .
 ```

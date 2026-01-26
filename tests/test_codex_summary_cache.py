@@ -13,6 +13,7 @@ from claude_code_transcripts import (
     codex_summary_path,
     read_codex_summary,
     build_codex_summary_prompt,
+    _build_local_session_choices,
     _select_session_with_refresh,
     CODEX_SUMMARY_MAX_CHARS,
     CODEX_SUMMARY_SESSION_MARKER,
@@ -74,6 +75,34 @@ def test_find_local_sessions_codex_uses_cache_and_fallback(tmp_path, monkeypatch
     assert summaries["session-a.jsonl"] == "Cached summary"
     assert summaries["session-b.jsonl"] == "session-b"
     assert missing == [session_b]
+
+
+def test_local_choices_show_codex_id_and_summary_column(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    sessions_dir = tmp_path / ".codex" / "sessions" / "project"
+    sessions_dir.mkdir(parents=True)
+
+    session_id = "019bf728-cbca-7882-91e8-a1c992ef58eb"
+    session_file = sessions_dir / "rollout-2026-01-25T19-48-48-019bf86b-1eea-79d1.jsonl"
+    session_file.write_text(
+        '{"type":"session_meta","payload":{"id":"%s","cwd":"/proj"}}\n'
+        '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Hello"}]}}\n'
+        % session_id,
+        encoding="utf-8",
+    )
+
+    summary_path = codex_summary_path(session_file)
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text("Cached summary", encoding="utf-8")
+
+    results = find_local_sessions(sessions_dir, limit=10, agent=AGENT_CODEX)
+    choices = _build_local_session_choices(results, agent=AGENT_CODEX)
+
+    title = choices[0].title
+    assert session_id in title
+    assert "Cached summary" in title
+    assert "rollout-2026-01-25T19-48-48-019bf86b-1eea-79d1" not in title
 
 
 def test_build_codex_summary_prompt_includes_roles(tmp_path):

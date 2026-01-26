@@ -1930,16 +1930,27 @@ def cli():
     pass
 
 
-def _build_local_session_choices(results):
+def _build_local_session_choices(results, agent=AGENT_CLAUDE):
+    agent = normalize_agent(agent) or AGENT_CLAUDE
     choices = []
     for filepath, summary in results:
         stat = filepath.stat()
         mod_time = datetime.fromtimestamp(stat.st_mtime)
         size_kb = stat.st_size / 1024
         date_str = mod_time.strftime("%Y-%m-%d %H:%M")
-        if len(summary) > 50:
-            summary = summary[:47] + "..."
-        display = f"{date_str}  {size_kb:5.0f} KB  {summary}"
+        if agent == AGENT_CODEX:
+            meta = _get_codex_session_meta(filepath)
+            session_id = meta.get("id") or filepath.stem
+            summary_text = read_codex_summary(filepath) or ""
+            if len(summary_text) > 50:
+                summary_text = summary_text[:47] + "..."
+            display = f"{date_str}  {size_kb:5.0f} KB  {session_id:36}"
+            if summary_text:
+                display = f"{display}  {summary_text}"
+        else:
+            if len(summary) > 50:
+                summary = summary[:47] + "..."
+            display = f"{date_str}  {size_kb:5.0f} KB  {summary}"
         choices.append(questionary.Choice(title=display, value=filepath))
     return choices
 
@@ -2061,7 +2072,7 @@ def local_cmd(ctx, output, output_auto, repo, gist, include_json, open_browser, 
             )
         else:
             current_results = results
-        return _build_local_session_choices(current_results)
+        return _build_local_session_choices(current_results, agent=agent)
 
     if agent == AGENT_CODEX and refresh_event is not None:
         selected = asyncio.run(

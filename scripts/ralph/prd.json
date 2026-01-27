@@ -1,0 +1,86 @@
+{
+  "project": "claude-code-transcripts",
+  "branchName": "ralph/conversation-search-fuzzy-match",
+  "description": "Conversation search with fuzzy matching across all stored conversations.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Store conversations in SQLite",
+      "description": "As a developer, I want conversations stored in SQLite so they persist and can be indexed for search.",
+      "acceptanceCriteria": [
+        "Conversations are persisted in a SQLite database table (e.g., `conversations`).",
+        "Each conversation has: `id`, `title`, `body` (or transcript), `created_at`, `published_at` (nullable), `updated_at`.",
+        "Add indexes for `created_at` and `published_at` to support sorting.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Incremental indexing on startup",
+      "description": "As a user, I want new or updated conversations to be indexed automatically so search results are up to date.",
+      "acceptanceCriteria": [
+        "On app startup, an indexing job runs automatically.",
+        "Indexing only processes conversations that are new or have changed since last index run (incremental).",
+        "Indexing is idempotent; running it twice with no changes does not modify the index.",
+        "Provide a manual \"Reindex\" action for recovery/debugging.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Fuzzy search API",
+      "description": "As a user, I want search results even when I mistype so I can still find the right conversation.",
+      "acceptanceCriteria": [
+        "GET /api/search?query=... returns matching conversations ordered by relevance.",
+        "Fuzzy matching tolerates small typos (e.g., query \"teh\" matches \"the\").",
+        "Empty query returns an empty list (not all conversations).",
+        "Response includes `id`, `title`, `created_at`, `published_at`, and a short snippet.",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Index page with sort toggle",
+      "description": "As a user, I want to browse all conversations and sort by created or published date.",
+      "acceptanceCriteria": [
+        "GET / shows an index page listing all conversations.",
+        "Default sort order is by created_at descending.",
+        "User can toggle sort by published_at descending.",
+        "Each list item shows title and date (created or published, depending on sort).",
+        "Verify in browser using dev-browser skill",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Search UI",
+      "description": "As a user, I want a search box so I can search conversations directly in the UI.",
+      "acceptanceCriteria": [
+        "Index page includes a search input.",
+        "Submitting a query shows search results without leaving the page.",
+        "Results show title, date, and snippet.",
+        "No results state is shown when nothing matches.",
+        "Verify in browser using dev-browser skill",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

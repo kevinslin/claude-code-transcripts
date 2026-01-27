@@ -1,15 +1,52 @@
-Uses uv. Run tests like this:
+# Ralph Agent Instructions
 
-    uv run pytest
+## Overview
 
-Run the development version of the tool like this:
+Ralph is an autonomous AI agent loop that runs AI coding tools (Amp, Claude Code, or OpenAI Codex) repeatedly until all PRD items are complete. Each iteration is a fresh instance with clean context.
 
-    uv run llm-transcripts --help
+## Commands
 
-Always practice TDD: write a faliing test, watch it fail, then make it pass.
+```bash
+# Run the flowchart dev server
+cd flowchart && npm run dev
 
-Commit early and often. Commits should bundle the test, implementation, and documentation changes together.
+# Build the flowchart
+cd flowchart && npm run build
 
-Run Black to format code before you commit:
+# Run Ralph with Amp (default)
+./ralph.sh [max_iterations]
 
-    uv run black .
+# Run Ralph with Claude Code
+./ralph.sh --tool claude [max_iterations]
+
+# Run Ralph with OpenAI Codex
+./ralph.sh --tool codex [max_iterations]
+```
+
+## Key Files
+
+- `ralph.sh` - The bash loop that spawns fresh AI instances (supports `--tool amp`, `--tool claude`, or `--tool codex`)
+- `prompt.md` - Instructions given to each AMP instance
+-  `CLAUDE.md` - Instructions given to each Claude Code instance
+- `CODEX.md` - Instructions given to each OpenAI Codex instance
+- `prd.json.example` - Example PRD format
+- `flowchart/` - Interactive React Flow diagram explaining how Ralph works
+
+## Flowchart
+
+The `flowchart/` directory contains an interactive visualization built with React Flow. It's designed for presentations - click through to reveal each step with animations.
+
+To run locally:
+```bash
+cd flowchart
+npm install
+npm run dev
+```
+
+## Patterns
+
+- Each iteration spawns a fresh AI instance (Amp, Claude Code, or OpenAI Codex) with clean context
+- For Codex, use `codex exec` for non-interactive runs; the interactive CLI requires a TTY
+- Memory persists via git history, `progress.txt`, and `prd.json`
+- Stories should be small enough to complete in one context window
+- Always update AGENTS.md with discovered patterns for future iterations

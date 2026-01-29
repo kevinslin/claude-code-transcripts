@@ -1,18 +1,22 @@
 """Convert Claude Code or Codex session JSON to mobile-friendly HTML pages with pagination."""
 
 import asyncio
+from difflib import SequenceMatcher
 import json
 import html
 import os
 import platform
 import re
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import threading
 import webbrowser
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import click
 from click_default_group import DefaultGroup
@@ -876,6 +880,729 @@ def parse_session_file(filepath, agent=None):
         # Standard JSON format
         with open(filepath, "r", encoding="utf-8") as f:
             return json.load(f)
+
+
+CONVERSATIONS_TABLE = "conversations"
+CONVERSATION_INDEX_STATE_TABLE = "conversation_index_state"
+
+
+def default_conversations_db_path():
+    return Path.home() / ".config" / "llm-transcripts" / "conversations.db"
+
+
+def init_conversations_db(db_path):
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {CONVERSATIONS_TABLE} (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                published_at TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS conversations_created_at_idx "
+            f"ON {CONVERSATIONS_TABLE}(created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS conversations_published_at_idx "
+            f"ON {CONVERSATIONS_TABLE}(published_at)"
+        )
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {CONVERSATION_INDEX_STATE_TABLE} (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                last_indexed_at REAL
+            )
+            """
+        )
+        conn.commit()
+
+
+def _get_last_indexed_at(conn):
+    row = conn.execute(
+        f"SELECT last_indexed_at FROM {CONVERSATION_INDEX_STATE_TABLE} WHERE id = 1"
+    ).fetchone()
+    if row is None:
+        return None
+    return row[0]
+
+
+def _set_last_indexed_at(conn, timestamp):
+    conn.execute(
+        f"""
+        INSERT INTO {CONVERSATION_INDEX_STATE_TABLE} (id, last_indexed_at)
+        VALUES (1, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            last_indexed_at = excluded.last_indexed_at
+        """,
+        (timestamp,),
+    )
+
+
+def _timestamp_or_now(timestamp):
+    if timestamp:
+        return timestamp
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _extract_session_timestamps(loglines, session_data=None):
+    if session_data:
+        created = session_data.get("created_at")
+        updated = session_data.get("updated_at")
+        if created or updated:
+            return _timestamp_or_now(created), _timestamp_or_now(updated or created)
+
+    created_at = None
+    updated_at = None
+    for entry in loglines:
+        timestamp = entry.get("timestamp")
+        if timestamp:
+            created_at = timestamp
+            break
+    for entry in reversed(loglines):
+        timestamp = entry.get("timestamp")
+        if timestamp:
+            updated_at = timestamp
+            break
+
+    created_at = _timestamp_or_now(created_at)
+    updated_at = _timestamp_or_now(updated_at or created_at)
+    return created_at, updated_at
+
+
+def _conversation_body_from_loglines(loglines):
+    lines = []
+    for entry in loglines:
+        role = entry.get("type")
+        message = entry.get("message", {})
+        content = message.get("content", "")
+        text = extract_text_from_content(content)
+        if not text:
+            continue
+        if role == "user":
+            prefix = "User"
+        elif role == "assistant":
+            prefix = "Assistant"
+        else:
+            prefix = role or "Message"
+        lines.append(f"{prefix}: {text}")
+    return "\n\n".join(lines)
+
+
+def _conversation_id_for_session(filepath, agent=None):
+    filepath = Path(filepath)
+    agent = normalize_agent(agent) or detect_jsonl_agent(filepath)
+    if filepath.suffix == ".jsonl" and agent == AGENT_CODEX:
+        meta = _get_codex_session_meta(filepath)
+        if meta.get("id"):
+            return meta["id"]
+    return filepath.stem
+
+
+def build_conversation_record(session_path, agent=None):
+    session_path = Path(session_path)
+    session_data = parse_session_file(session_path, agent=agent)
+    loglines = session_data.get("loglines", [])
+    if not loglines:
+        return None
+
+    created_at, updated_at = _extract_session_timestamps(loglines, session_data)
+    title = session_data.get("title") or get_session_summary(session_path, agent=agent)
+    if not title or title == "(no summary)":
+        title = session_path.stem
+    body = _conversation_body_from_loglines(loglines)
+    if not body:
+        body = title
+
+    return {
+        "id": _conversation_id_for_session(session_path, agent=agent),
+        "title": title,
+        "body": body,
+        "created_at": created_at,
+        "published_at": session_data.get("published_at"),
+        "updated_at": updated_at,
+    }
+
+
+def store_conversation_record(db_path, record):
+    init_conversations_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            f"""
+            INSERT INTO {CONVERSATIONS_TABLE}
+                (id, title, body, created_at, published_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                body = excluded.body,
+                created_at = excluded.created_at,
+                published_at = excluded.published_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                record["id"],
+                record["title"],
+                record["body"],
+                record["created_at"],
+                record.get("published_at"),
+                record["updated_at"],
+            ),
+        )
+        conn.commit()
+
+
+def store_session_conversation(session_path, db_path=None, agent=None):
+    record = build_conversation_record(session_path, agent=agent)
+    if record is None:
+        return None
+    db_path = db_path or default_conversations_db_path()
+    store_conversation_record(db_path, record)
+    return record
+
+
+def _iter_session_files(source, include_agents=False, agent=None):
+    source = Path(source)
+    if not source.exists():
+        return []
+    agent = normalize_agent(agent) or AGENT_CLAUDE
+    if agent == AGENT_CODEX:
+        session_files = []
+        for session_file in source.glob("**/*.jsonl"):
+            if not include_agents and session_file.name.startswith("agent-"):
+                continue
+            if is_codex_summary_session(session_file):
+                continue
+            summary = get_session_summary(session_file, agent=agent)
+            if summary.lower() == "warmup" or summary == "(no summary)":
+                continue
+            session_files.append(session_file)
+        return session_files
+
+    session_files = []
+    for session_file in source.glob("**/*.jsonl"):
+        if not include_agents and session_file.name.startswith("agent-"):
+            continue
+        summary = get_session_summary(session_file, agent=agent)
+        if summary.lower() == "warmup" or summary == "(no summary)":
+            continue
+        session_files.append(session_file)
+    return session_files
+
+
+def index_conversations(db_path, source, include_agents=False, agent=None):
+    """Index conversations from source folder into the SQLite database.
+
+    Returns a dict with indexed_count, skipped_count, and last_indexed_at.
+    """
+    db_path = Path(db_path)
+    source = Path(source)
+    init_conversations_db(db_path)
+
+    session_files = _iter_session_files(source, include_agents=include_agents, agent=agent)
+    if not session_files:
+        return {"indexed_count": 0, "skipped_count": 0, "last_indexed_at": None}
+
+    with sqlite3.connect(db_path) as conn:
+        last_indexed_at = _get_last_indexed_at(conn)
+        indexed_count = 0
+        skipped_count = 0
+
+        for session_file in session_files:
+            try:
+                mtime = session_file.stat().st_mtime
+            except OSError:
+                skipped_count += 1
+                continue
+            if last_indexed_at is not None and mtime <= last_indexed_at:
+                skipped_count += 1
+                continue
+            record = build_conversation_record(session_file, agent=agent)
+            if record is None:
+                skipped_count += 1
+                continue
+            store_conversation_record(db_path, record)
+            indexed_count += 1
+
+        latest_mtime = max((p.stat().st_mtime for p in session_files), default=None)
+        if latest_mtime is None:
+            return {
+                "indexed_count": indexed_count,
+                "skipped_count": skipped_count,
+                "last_indexed_at": last_indexed_at,
+            }
+        if last_indexed_at is None or latest_mtime > last_indexed_at:
+            _set_last_indexed_at(conn, latest_mtime)
+        return {
+            "indexed_count": indexed_count,
+            "skipped_count": skipped_count,
+            "last_indexed_at": latest_mtime,
+        }
+
+
+def reindex_conversations(db_path, source, include_agents=False, agent=None):
+    """Force reindex all conversations by clearing the last indexed marker."""
+    db_path = Path(db_path)
+    init_conversations_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        _set_last_indexed_at(conn, None)
+    return index_conversations(
+        db_path, source, include_agents=include_agents, agent=agent
+    )
+
+
+def _normalize_search_text(text):
+    if not text:
+        return ""
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _tokenize_search_text(text, limit=1000):
+    if not text:
+        return []
+    tokens = re.findall(r"[a-z0-9']+", text.lower())
+    if limit is None:
+        return tokens
+    return tokens[:limit]
+
+
+def _best_fuzzy_token_score(query_token, tokens):
+    if len(query_token) < 3:
+        return 1.0 if query_token in tokens else 0.0
+    best = 0.0
+    for token in tokens:
+        if token == query_token:
+            return 1.0
+        ratio = SequenceMatcher(None, query_token, token).ratio()
+        if ratio > best:
+            best = ratio
+            if best >= 0.9:
+                break
+    return best
+
+
+def _fuzzy_score(query, text):
+    query_norm = _normalize_search_text(query)
+    if not query_norm:
+        return 0.0
+    text_norm = _normalize_search_text(text)
+    if not text_norm:
+        return 0.0
+    if query_norm in text_norm:
+        return 1.0
+
+    query_tokens = _tokenize_search_text(query_norm, limit=None)
+    if not query_tokens:
+        return 0.0
+    tokens = _tokenize_search_text(text_norm)
+    if not tokens:
+        return 0.0
+    scores = []
+    token_set = set(tokens)
+    for token in query_tokens:
+        scores.append(_best_fuzzy_token_score(token, token_set))
+    return sum(scores) / len(scores)
+
+
+def _build_snippet(text, query, max_length=160):
+    text_clean = re.sub(r"\s+", " ", text or "").strip()
+    if not text_clean:
+        return ""
+    if len(text_clean) <= max_length:
+        return text_clean
+    query_norm = _normalize_search_text(query)
+    lower_text = text_clean.lower()
+    if query_norm and query_norm in lower_text:
+        idx = lower_text.index(query_norm)
+    else:
+        tokens = _tokenize_search_text(lower_text)
+        if not tokens or not query_norm:
+            return text_clean[:max_length] + "..."
+        best_token = None
+        best_ratio = 0.0
+        for token in set(tokens):
+            ratio = SequenceMatcher(None, query_norm, token).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_token = token
+        if best_token and best_token in lower_text:
+            idx = lower_text.index(best_token)
+        else:
+            return text_clean[:max_length] + "..."
+    start = max(0, idx - max_length // 3)
+    end = min(len(text_clean), start + max_length)
+    snippet = text_clean[start:end]
+    if start > 0:
+        snippet = "..." + snippet
+    if end < len(text_clean):
+        snippet = snippet + "..."
+    return snippet
+
+
+def search_conversations(db_path, query, limit=20, min_score=0.6):
+    query_norm = _normalize_search_text(query)
+    if not query_norm:
+        return []
+    db_path = Path(db_path)
+    init_conversations_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, title, body, created_at, published_at
+            FROM {CONVERSATIONS_TABLE}
+            """
+        ).fetchall()
+
+    results = []
+    for row in rows:
+        conv_id, title, body, created_at, published_at = row
+        title_score = _fuzzy_score(query_norm, title)
+        body_score = _fuzzy_score(query_norm, body)
+        score = max(title_score + 0.05, body_score)
+        if score < min_score:
+            continue
+        snippet_source = body or title
+        snippet = _build_snippet(snippet_source, query_norm)
+        results.append(
+            {
+                "id": conv_id,
+                "title": title,
+                "created_at": created_at,
+                "published_at": published_at,
+                "snippet": snippet,
+                "_score": score,
+            }
+        )
+
+    results.sort(key=lambda item: item["_score"], reverse=True)
+    trimmed = results[:limit]
+    for item in trimmed:
+        item.pop("_score", None)
+    return trimmed
+
+
+def list_conversations(db_path, sort_by="created"):
+    sort_key = (sort_by or "created").lower()
+    if sort_key not in ("created", "published"):
+        sort_key = "created"
+    db_path = Path(db_path)
+    init_conversations_db(db_path)
+    if sort_key == "published":
+        order_by = "published_at IS NULL, published_at DESC, created_at DESC"
+    else:
+        order_by = "created_at DESC, published_at DESC"
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, title, created_at, published_at
+            FROM {CONVERSATIONS_TABLE}
+            ORDER BY {order_by}
+            """
+        ).fetchall()
+    return [
+        {
+            "id": row[0],
+            "title": row[1],
+            "created_at": row[2],
+            "published_at": row[3],
+        }
+        for row in rows
+    ]
+
+
+def render_index_page(conversations, sort_by):
+    sort_key = (sort_by or "created").lower()
+    if sort_key not in ("created", "published"):
+        sort_key = "created"
+    created_active = "active" if sort_key == "created" else ""
+    published_active = "active" if sort_key == "published" else ""
+    items = []
+    for conv in conversations:
+        title = html.escape(conv.get("title") or "(untitled)")
+        if sort_key == "published":
+            date_label = "Published"
+            date_value = conv.get("published_at") or "Unpublished"
+        else:
+            date_label = "Created"
+            date_value = conv.get("created_at") or "Unknown"
+        items.append(
+            f"<li><div class='title'>{title}</div>"
+            f"<div class='meta'>{date_label}: {html.escape(str(date_value))}</div></li>"
+        )
+    items_html = "".join(items) if items else "<li>No conversations yet.</li>"
+    return f"""
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Conversations</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      font-family: "Georgia", "Times New Roman", serif;
+      background: #f7f1e8;
+      color: #1f1b16;
+    }}
+    body {{
+      margin: 0;
+      padding: 2.5rem 1.5rem 4rem;
+    }}
+    .wrap {{
+      max-width: 860px;
+      margin: 0 auto;
+    }}
+    h1 {{
+      margin: 0 0 0.75rem;
+      font-size: clamp(2rem, 4vw, 3rem);
+      letter-spacing: 0.02em;
+    }}
+    .toolbar {{
+      display: flex;
+      gap: 0.5rem;
+      margin: 0 0 1.5rem;
+      flex-wrap: wrap;
+    }}
+    .toggle {{
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.45rem 0.9rem;
+      border-radius: 999px;
+      border: 1px solid #c7b9a9;
+      text-decoration: none;
+      color: inherit;
+      font-weight: 600;
+      background: #fdfbf7;
+    }}
+    .toggle.active {{
+      background: #2e241a;
+      color: #fdfbf7;
+      border-color: #2e241a;
+    }}
+    .search {{
+      margin-bottom: 1.5rem;
+      padding: 1rem;
+      border: 1px solid #d7cab8;
+      border-radius: 16px;
+      background: #fdfbf7;
+    }}
+    .search form {{
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }}
+    .search input[type="search"] {{
+      flex: 1 1 240px;
+      padding: 0.6rem 0.75rem;
+      border-radius: 999px;
+      border: 1px solid #c7b9a9;
+      font-size: 1rem;
+    }}
+    .search button {{
+      padding: 0.6rem 1.1rem;
+      border-radius: 999px;
+      border: none;
+      background: #2e241a;
+      color: #fdfbf7;
+      font-weight: 600;
+      cursor: pointer;
+    }}
+    .search button:hover {{
+      background: #1f1b16;
+    }}
+    .search-status {{
+      margin-top: 0.6rem;
+      font-size: 0.9rem;
+      color: #5c5146;
+    }}
+    .search-results {{
+      margin-top: 1rem;
+    }}
+    .search-list {{
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      border-top: 1px solid #d7cab8;
+    }}
+    .search-item {{
+      padding: 0.85rem 0;
+      border-bottom: 1px solid #d7cab8;
+    }}
+    .search-item-title {{
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin-bottom: 0.2rem;
+    }}
+    .search-item-meta {{
+      font-size: 0.85rem;
+      color: #5c5146;
+      margin-bottom: 0.35rem;
+    }}
+    .search-item-snippet {{
+      font-size: 0.95rem;
+      color: #2b241c;
+    }}
+    ul {{
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      border-top: 1px solid #d7cab8;
+    }}
+    li {{
+      padding: 1rem 0;
+      border-bottom: 1px solid #d7cab8;
+    }}
+    .title {{
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin-bottom: 0.2rem;
+    }}
+    .meta {{
+      font-size: 0.9rem;
+      color: #5c5146;
+    }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Conversations</h1>
+    <div class="toolbar">
+      <a class="toggle {created_active}" href="/?sort=created">Sort by created</a>
+      <a class="toggle {published_active}" href="/?sort=published">Sort by published</a>
+    </div>
+    <section class="search" aria-label="Search conversations">
+      <form id="search-form" role="search">
+        <input id="search-input" name="query" type="search" placeholder="Search conversations" autocomplete="off" />
+        <button type="submit">Search</button>
+      </form>
+      <div id="search-status" class="search-status" aria-live="polite"></div>
+      <div id="search-results" class="search-results" hidden></div>
+    </section>
+    <ul>
+      {items_html}
+    </ul>
+  </div>
+  <script>
+    (function() {{
+      var form = document.getElementById('search-form');
+      var input = document.getElementById('search-input');
+      var status = document.getElementById('search-status');
+      var results = document.getElementById('search-results');
+      if (!form || !input || !status || !results) return;
+
+      function escapeHtml(value) {{
+        return String(value || '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }}
+
+      function renderResults(items, query) {{
+        results.innerHTML = '';
+        if (!query) {{
+          results.hidden = true;
+          status.textContent = '';
+          return;
+        }}
+        results.hidden = false;
+        if (!items.length) {{
+          status.textContent = 'No results for "' + query + '".';
+          return;
+        }}
+        status.textContent =
+          items.length + ' result' + (items.length === 1 ? '' : 's') + ' for "' + query + '".';
+        var list = document.createElement('ul');
+        list.className = 'search-list';
+        items.forEach(function(item) {{
+          var title = escapeHtml(item.title || '(untitled)');
+          var dateValue = item.published_at || item.created_at || '';
+          var dateLabel = item.published_at ? 'Published' : 'Created';
+          var snippet = escapeHtml(item.snippet || '');
+          var li = document.createElement('li');
+          li.className = 'search-item';
+          li.innerHTML =
+            '<div class="search-item-title">' + title + '</div>' +
+            '<div class="search-item-meta">' + dateLabel + ': ' + escapeHtml(dateValue) + '</div>' +
+            '<div class="search-item-snippet">' + snippet + '</div>';
+          list.appendChild(li);
+        }});
+        results.appendChild(list);
+      }}
+
+      form.addEventListener('submit', function(event) {{
+        event.preventDefault();
+        var query = input.value.trim();
+        if (!query) {{
+          renderResults([], '');
+          return;
+        }}
+        status.textContent = 'Searching...';
+        fetch('/api/search?query=' + encodeURIComponent(query))
+          .then(function(response) {{
+            if (!response.ok) throw new Error('Search request failed');
+            return response.json();
+          }})
+          .then(function(data) {{
+            renderResults(data || [], query);
+          }})
+          .catch(function() {{
+            status.textContent = 'Search failed. Please try again.';
+            results.hidden = true;
+          }});
+      }});
+    }})();
+  </script>
+</body>
+</html>
+"""
+
+
+def create_search_server(db_path, host="127.0.0.1", port=3010):
+    db_path = Path(db_path)
+
+    class SearchHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def do_GET(self):
+            parsed = urlparse(self.path)
+            if parsed.path == "/":
+                params = parse_qs(parsed.query)
+                sort_by = params.get("sort", ["created"])[0]
+                conversations = list_conversations(db_path, sort_by=sort_by)
+                payload = render_index_page(conversations, sort_by=sort_by).encode(
+                    "utf-8"
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            if parsed.path != "/api/search":
+                self.send_response(404)
+                self.end_headers()
+                return
+            params = parse_qs(parsed.query)
+            query = params.get("query", [""])[0]
+            results = search_conversations(db_path, query)
+            payload = json.dumps(results).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    return ThreadingHTTPServer((host, port), SearchHandler)
 
 
 def _parse_jsonl_file(filepath):

@@ -1,0 +1,97 @@
+# Ralph Progress Log
+Started: Mon Jan 26 23:47:09 PST 2026
+---
+## Codebase Patterns
+- Core CLI and helpers live in `src/claude_code_transcripts/__init__.py`.
+- Incremental conversation indexing uses `conversation_index_state` with `last_indexed_at` based on session file mtime.
+- Search API is served via `llm-transcripts serve` (defaults to 127.0.0.1:3010).
+- The `/` route on `llm-transcripts serve` renders the conversations index and supports `?sort=created|published`.
+- The index page renders search results client-side via `/api/search`.
+## 2026-01-26 23:51:54 PST - US-001
+- What was implemented
+- Added SQLite-backed conversation storage helpers and schema (table + indexes) for transcripts
+- Added tests covering DB initialization and record storage
+- Files changed
+- `src/claude_code_transcripts/__init__.py`
+- `tests/test_conversations_db.py`
+- `scripts/ralph/prd.json`
+- `scripts/ralph/progress.txt`
+- **Learnings for future iterations:**
+  - Patterns discovered (e.g., "this codebase uses X for Y")
+  - Core CLI and helpers are centralized in `src/claude_code_transcripts/__init__.py`.
+  - Gotchas encountered (e.g., "don't forget to update Z when changing W")
+  - None.
+  - Useful context (e.g., "the evaluation panel is in component X")
+  - SQLite schema now lives in code helpers and uses text timestamps.
+---
+## 2026-01-27 00:04:03 PST - US-002
+- What was implemented
+- Added incremental conversation indexing with persisted index state plus a manual reindex CLI command
+- Wired startup indexing into CLI commands (local/json/web/all)
+- Added tests covering index state table, incremental indexing, and reindex behavior
+- Files changed
+- `src/claude_code_transcripts/__init__.py`
+- `tests/test_conversations_db.py`
+- `scripts/ralph/prd.json`
+- `scripts/ralph/progress.txt`
+- **Learnings for future iterations:**
+- Patterns discovered (e.g., "this codebase uses X for Y")
+- Incremental indexing uses session file mtimes stored in `conversation_index_state`.
+- Gotchas encountered (e.g., "don't forget to update Z when changing W")
+- Tests require pytest; `python -m pytest` failed because pytest isn't installed in the current environment.
+- Useful context (e.g., "the evaluation panel is in component X")
+- Manual `reindex` CLI command can refresh the conversations database.
+---
+## 2026-01-27 00:13:30 PST - US-003
+- What was implemented
+- Added fuzzy search helpers with snippets plus an HTTP search API server and CLI `serve` command.
+- Added tests covering fuzzy matching and /api/search responses.
+- Files changed
+- `src/claude_code_transcripts/__init__.py`
+- `tests/test_search_api.py`
+- `AGENTS.md`
+- `scripts/ralph/prd.json`
+- `scripts/ralph/progress.txt`
+- **Learnings for future iterations:**
+  - Patterns discovered (e.g., "this codebase uses X for Y")
+  - Search API is available via `llm-transcripts serve` using a simple HTTP server.
+  - Gotchas encountered (e.g., "don't forget to update Z when changing W")
+  - pytest is not installed in the current environment; `python -m pytest` failed.
+  - Useful context (e.g., "the evaluation panel is in component X")
+  - Search API returns a JSON list of conversation summaries with snippets.
+---
+## 2026-01-27 00:18:06 PST - US-004
+- What was implemented
+- Added conversations index page at `/` with sort toggle for created vs published dates.
+- Added list/render helpers and tests covering sorting and index HTML output.
+- Files changed
+- `src/claude_code_transcripts/__init__.py`
+- `tests/test_index_page.py`
+- `AGENTS.md`
+- `scripts/ralph/prd.json`
+- `scripts/ralph/progress.txt`
+- **Learnings for future iterations:**
+  - Patterns discovered (e.g., "this codebase uses X for Y")
+  - `llm-transcripts serve` now serves the index page on `/` with `sort` query toggles.
+  - Gotchas encountered (e.g., "don't forget to update Z when changing W")
+  - pytest is not installed in the current environment; `python -m pytest` failed.
+  - Useful context (e.g., "the evaluation panel is in component X")
+  - Index page HTML is rendered server-side in `render_index_page`.
+---
+## 2026-01-27 00:22:26 PST - US-005
+- What was implemented
+- Added a client-side search form to the index page that fetches `/api/search` and renders results with snippets.
+- Added index page assertions for the search UI elements.
+- Files changed
+- `src/claude_code_transcripts/__init__.py`
+- `tests/test_index_page.py`
+- `scripts/ralph/prd.json`
+- `scripts/ralph/progress.txt`
+- **Learnings for future iterations:**
+  - Patterns discovered (e.g., "this codebase uses X for Y")
+  - The index page search UI renders results client-side with `/api/search`.
+  - Gotchas encountered (e.g., "don't forget to update Z when changing W")
+  - pytest is not installed in the current environment; `python -m pytest` failed.
+  - Useful context (e.g., "the evaluation panel is in component X")
+  - Search UI lives in `render_index_page` alongside the sort toggle.
+---

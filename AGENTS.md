@@ -50,3 +50,8 @@ npm run dev
 - Memory persists via git history, `progress.txt`, and `prd.json`
 - Stories should be small enough to complete in one context window
 - Always update AGENTS.md with discovered patterns for future iterations
+- Core CLI and helper functions live in `src/claude_code_transcripts/__init__.py`
+- The search API is served via `llm-transcripts serve` (defaults to 127.0.0.1:3010).
+- The `/` route on `llm-transcripts serve` renders the conversations index page and supports `?sort=created|published`.
+- The index page search UI is rendered in `render_index_page` and fetches `/api/search`.
+- For global CLI availability, install with `uv tool install --editable .` (from repo) or `uv tool install claude-code-transcripts` (from PyPI) and ensure `~/.local/bin` is on PATH.

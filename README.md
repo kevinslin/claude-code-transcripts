@@ -21,6 +21,19 @@ Or run it without installing:
 ```bash
 uvx --from claude-code-transcripts llm-transcripts --help
 ```
+To make the command available globally from this repo checkout:
+```bash
+uv tool install --editable .
+```
+If `llm-transcripts` is not found, ensure your tool bin directory is on PATH
+(usually `~/.local/bin` on macOS/Linux):
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+Alternative:
+```bash
+pipx install -e .
+```
 
 ## Usage
 
@@ -39,12 +52,14 @@ llm-transcripts local
 
 Examples below assume `LLM_AGENT` is set; otherwise pass the agent first (e.g., `llm-transcripts codex local`).
 
-There are four commands available:
+There are six commands available:
 
 - `local` (default) - select from local sessions (`~/.claude/projects` or `~/.codex/sessions`)
 - `web` - select from web sessions via the Claude API (Claude only)
 - `json` - convert a specific JSON or JSONL session file
 - `all` - convert all local sessions to a browsable HTML archive
+- `reindex` - rebuild the local SQLite conversations index
+- `serve` - start the local search API and web UI
 
 The quickest way to view a recent local session:
 
@@ -83,6 +98,29 @@ Use `--limit` to control how many sessions are shown (default: 10):
 
 ```bash
 llm-transcripts local --limit 20
+```
+
+### Web UI (search)
+
+Start the local web UI and search API:
+
+```bash
+export LLM_AGENT=claude
+llm-transcripts serve
+```
+
+If you haven't set `LLM_AGENT`, pass the agent first (for example, `llm-transcripts codex serve`).
+
+Then open the UI in your browser:
+
+```bash
+http://127.0.0.1:3010/
+```
+
+The index page supports `?sort=created|published`. You can customize the host/port or source directory:
+
+```bash
+llm-transcripts serve --host 0.0.0.0 --port 4000 --source ~/.claude/projects
 ```
 
 ### Web sessions

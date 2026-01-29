@@ -2769,6 +2769,12 @@ def local_cmd(ctx, output, output_auto, repo, gist, include_json, open_browser, 
     """Select and convert a local session to HTML."""
     agent = require_agent(ctx.obj.get("agent") if ctx.obj else None)
     projects_folder = default_sessions_root(agent)
+    index_conversations(
+        default_conversations_db_path(),
+        projects_folder,
+        include_agents=False,
+        agent=agent,
+    )
 
     if not projects_folder.exists():
         click.echo(f"Projects folder not found: {projects_folder}")
@@ -2941,6 +2947,12 @@ def json_cmd(
 ):
     """Convert a session JSON/JSONL file or URL to HTML."""
     agent = require_agent(ctx.obj.get("agent") if ctx.obj else None)
+    index_conversations(
+        default_conversations_db_path(),
+        default_sessions_root(agent),
+        include_agents=False,
+        agent=agent,
+    )
     # Handle URL input
     if is_url(json_file):
         click.echo(f"Fetching {json_file}...")
@@ -3268,6 +3280,12 @@ def web_cmd(
     If SESSION_ID is not provided, displays an interactive picker to select a session.
     """
     agent = require_agent(ctx.obj.get("agent") if ctx.obj else None)
+    index_conversations(
+        default_conversations_db_path(),
+        default_sessions_root(agent),
+        include_agents=False,
+        agent=agent,
+    )
     if agent != AGENT_CLAUDE:
         raise click.ClickException(
             "Web sessions are only supported for agent 'claude'."
@@ -3368,6 +3386,91 @@ def web_cmd(
         webbrowser.open(index_url)
 
 
+@cli.command("reindex")
+@click.option(
+    "-s",
+    "--source",
+    type=click.Path(exists=True),
+    help="Source directory containing sessions (default: ~/.claude/projects or ~/.codex/sessions).",
+)
+@click.option(
+    "--include-agents",
+    is_flag=True,
+    help="Include agent-* session files (excluded by default).",
+)
+@click.option(
+    "--db",
+    "db_path",
+    type=click.Path(),
+    help="Override the SQLite conversations database path.",
+)
+@click.pass_context
+def reindex_cmd(ctx, source, include_agents, db_path):
+    """Reindex all local sessions into the SQLite conversations database."""
+    agent = require_agent(ctx.obj.get("agent") if ctx.obj else None)
+    source = Path(source) if source else default_sessions_root(agent)
+    if not source.exists():
+        raise click.ClickException(f"Source directory not found: {source}")
+    db_path = Path(db_path) if db_path else default_conversations_db_path()
+    stats = reindex_conversations(
+        db_path, source, include_agents=include_agents, agent=agent
+    )
+    click.echo(
+        f"Reindexed {stats['indexed_count']} conversation(s); "
+        f"skipped {stats['skipped_count']}."
+    )
+
+
+@cli.command("serve")
+@click.option(
+    "--host",
+    default="127.0.0.1",
+    show_default=True,
+    help="Host interface to bind (default: 127.0.0.1).",
+)
+@click.option(
+    "--port",
+    default=3010,
+    show_default=True,
+    type=int,
+    help="Port to serve the API on (default: 3010).",
+)
+@click.option(
+    "-s",
+    "--source",
+    type=click.Path(exists=True),
+    help="Source directory containing sessions (default: ~/.claude/projects or ~/.codex/sessions).",
+)
+@click.option(
+    "--include-agents",
+    is_flag=True,
+    help="Include agent-* session files (excluded by default).",
+)
+@click.option(
+    "--db",
+    "db_path",
+    type=click.Path(),
+    help="Override the SQLite conversations database path.",
+)
+@click.pass_context
+def serve_cmd(ctx, host, port, source, include_agents, db_path):
+    """Serve the conversation search API."""
+    agent = require_agent(ctx.obj.get("agent") if ctx.obj else None)
+    source = Path(source) if source else default_sessions_root(agent)
+    if not source.exists():
+        raise click.ClickException(f"Source directory not found: {source}")
+    db_path = Path(db_path) if db_path else default_conversations_db_path()
+    index_conversations(db_path, source, include_agents=include_agents, agent=agent)
+    server = create_search_server(db_path, host=host, port=port)
+    click.echo(f"Serving search API at http://{host}:{port}/api/search")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
 @cli.command("all")
 @click.option(
     "-s",
@@ -3421,6 +3524,13 @@ def all_cmd(ctx, source, output, include_agents, dry_run, open_browser, quiet):
 
     if not source.exists():
         raise click.ClickException(f"Source directory not found: {source}")
+
+    index_conversations(
+        default_conversations_db_path(),
+        source,
+        include_agents=include_agents,
+        agent=agent,
+    )
 
     output = Path(output) if output else default_archive_dir(agent)
 
